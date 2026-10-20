@@ -1,0 +1,12 @@
+{
+  "name": "a2ui-agent",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  }
+}

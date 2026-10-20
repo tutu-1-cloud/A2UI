@@ -1,0 +1,9 @@
+packages:
+  - packages/*
+  - server/*
+  - web/*
+
+allowBuilds:
+  esbuild: true
+
+nodeLinker: hoisted
