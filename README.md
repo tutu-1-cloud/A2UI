@@ -105,5 +105,3 @@ const LLM_CONFIG = {
 ```
 
 - 纯文本请求走 `model`；消息带图片时自动切到 `vlModel`
-- 使用国内兼容服务（DeepSeek、通义千问、Moonshot 等）时，`baseURL` 与模型名一起改
-- 配置生效后 http://127.0.0.1:3000/api/health 返回 `hasRealAgent: true`
