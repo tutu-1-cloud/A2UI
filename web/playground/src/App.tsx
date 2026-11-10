@@ -1,7 +1,13 @@
+/**
+ * Playground 主组件
+ * 左侧聊天面板（输入/消息列表），右侧预览面板（渲染 A2UI 协议生成的界面）。
+ */
+
 import { renderVNode } from '@a2ui/react'
 import { usePlayground } from './hooks/usePlayground'
 
 export default function App() {
+  // 从 usePlayground 获取所有状态和操作方法
   const {
     status,
     loading,
@@ -30,12 +36,14 @@ export default function App() {
 
   return (
     <div className="playground">
+      {/* 顶部标题 */}
       <header className="header">
         <h1>A2UI Playground</h1>
         <p className="subtitle">对话式生成 UI · 点选编辑 · 多 surface</p>
       </header>
 
       <div className="main">
+        {/* 左侧聊天面板 */}
         <section className="chat-panel">
           <div className="chat-list">
             {messages.length === 0 && (
@@ -52,6 +60,7 @@ export default function App() {
             ))}
           </div>
 
+          {/* 选中组件徽章：显示 @Type[id] 和取消按钮 */}
           {selectedElement && (
             <div className="selected-element-badge">
               <span className="badge-label">
@@ -61,6 +70,7 @@ export default function App() {
             </div>
           )}
 
+          {/* 输入行：textarea + 图片上传 + 发送按钮 */}
           <div className="chat-input-row">
             <textarea
               value={inputText}
@@ -70,6 +80,7 @@ export default function App() {
               onKeyDown={onKeydown}
             />
             <div className="chat-actions">
+              {/* 图片上传：label 包裹隐藏的 file input */}
               <label className="btn btn-ghost">
                 🖼 图片
                 <input
@@ -90,9 +101,11 @@ export default function App() {
             </div>
           </div>
 
+          {/* 状态提示 */}
           <div className="status">{status}</div>
         </section>
 
+        {/* 右侧预览面板 */}
         <section className="preview-panel">
           <div className="preview-head">
             <span className="preview-title">预览</span>
@@ -105,10 +118,12 @@ export default function App() {
               🗑 清除画布
             </button>
           </div>
+          {/* 画布区域：点击事件委托用于选中组件 */}
           <div className="canvas" onClick={onCanvasClick}>
             {trees.size === 0 && (
               <p className="empty">发送消息后，界面会渲染在这里</p>
             )}
+            {/* 遍历所有 surface，渲染对应的树 */}
             {Array.from(trees.entries()).map(([surfaceId, tree]) => (
               <div key={surfaceId} className="surface">
                 <div className="surface-tag">surface: {surfaceId}</div>

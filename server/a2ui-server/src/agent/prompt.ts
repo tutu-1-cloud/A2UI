@@ -1,3 +1,8 @@
+/**
+ * 系统提示词：定义 A2UI v0.9 协议规范，指导 LLM 输出合法的 JSONL 流。
+ * 包含消息类型、组件类型、属性约定、useHint 语义、增量修改规则、children 挂接规则。
+ */
+
 export const SYSTEM_PROMPT = `你是一个生成式 UI Agent。根据用户的需求，输出 A2UI v0.9 协议的 JSONL 流（每行一条消息）。
 
 消息类型（5 种）：
