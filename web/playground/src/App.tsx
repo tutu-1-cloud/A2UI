@@ -3,8 +3,44 @@
  * 左侧聊天面板（输入/消息列表），右侧预览面板（渲染 A2UI 协议生成的界面）。
  */
 
-import { renderVNode } from '@a2ui/react'
-import { usePlayground } from './hooks/usePlayground'
+import { renderVNode, type TreeNode } from '@a2ui/react'
+import { usePlayground, type AgentStep } from './hooks/usePlayground'
+
+/** 步骤图标：计划用清单，工具结果按成功/失败区分 */
+function stepIcon(step: AgentStep): string {
+  if (step.kind === 'thought') return '💭'
+  if (step.kind === 'plan') return '📋'
+  if (step.kind === 'tool_call') return '🔧'
+  return step.ok === false ? '❌' : '✅'
+}
+
+/** Agent 过程步骤面板：思考过程可折叠，其余步骤一行一条 */
+function StepsPanel({ steps }: { steps: AgentStep[] }) {
+  if (steps.length === 0) return null
+
+  return (
+    <div className="steps">
+      <div className="steps-title">执行步骤</div>
+      {steps.map((s) =>
+        s.kind === 'reasoning' ? (
+          // 思考过程通常很长：进行中展开，生成结束后自动收起，仍可手动点开回看
+          <div key={s.id} className="step step-reasoning">
+            <span className="step-icon">🧠</span>
+            <details className="step-thinking" open={s.live === true}>
+              <summary>思考过程（{s.text.length} 字）</summary>
+              <div className="step-thinking-body">{s.text}</div>
+            </details>
+          </div>
+        ) : (
+          <div key={s.id} className={`step step-${s.kind}`}>
+            <span className="step-icon">{stepIcon(s)}</span>
+            <span className="step-text">{s.text}</span>
+          </div>
+        ),
+      )}
+    </div>
+  )
+}
 
 export default function App() {
   // 从 usePlayground 获取所有状态和操作方法
@@ -13,6 +49,7 @@ export default function App() {
     loading,
     compressing,
     messages,
+    steps,
     inputText,
     setInputText,
     selectedElement,
@@ -34,12 +71,17 @@ export default function App() {
     }
   }
 
+  // 只渲染有内容的画布：清空后不残留 surface 标签
+  const visibleTrees = Array.from(trees.entries()).filter(
+    (entry): entry is [string, TreeNode] => entry[1] !== null,
+  )
+
   return (
     <div className="playground">
       {/* 顶部标题 */}
       <header className="header">
         <h1>A2UI Playground</h1>
-        <p className="subtitle">对话式生成 UI · 点选编辑 · 多 surface</p>
+        <p className="subtitle">对话式生成 UI · 点选编辑</p>
       </header>
 
       <div className="main">
@@ -54,10 +96,14 @@ export default function App() {
                 key={msg.id}
                 className={['msg', msg.role === 'user' ? 'msg-user' : 'msg-assistant'].join(' ')}
               >
-                {msg.hasImage && <span className="msg-img-tag">🖼 </span>}
+                {msg.imageUrl && (
+                  <img className="msg-image" src={msg.imageUrl} alt="上传的图片" />
+                )}
                 {msg.content}
               </div>
             ))}
+            {/* Agent 过程步骤：思考过程 / 思考 / 计划 / 工具调用 / 工具结果 */}
+            <StepsPanel steps={steps} />
           </div>
 
           {/* 选中组件徽章：显示 @Type[id] 和取消按钮 */}
@@ -112,7 +158,7 @@ export default function App() {
             <button
               className="btn btn-ghost btn-clear"
               title="清空当前画布"
-              disabled={trees.size === 0}
+              disabled={visibleTrees.length === 0}
               onClick={clearCanvas}
             >
               🗑 清除画布
@@ -120,16 +166,14 @@ export default function App() {
           </div>
           {/* 画布区域：点击事件委托用于选中组件 */}
           <div className="canvas" onClick={onCanvasClick}>
-            {trees.size === 0 && (
+            {visibleTrees.length === 0 && (
               <p className="empty">发送消息后，界面会渲染在这里</p>
             )}
-            {/* 遍历所有 surface，渲染对应的树 */}
-            {Array.from(trees.entries()).map(([surfaceId, tree]) => (
+            {/* 遍历所有有内容的 surface，渲染对应的树 */}
+            {visibleTrees.map(([surfaceId, tree]) => (
               <div key={surfaceId} className="surface">
                 <div className="surface-tag">surface: {surfaceId}</div>
-                {tree ? renderVNode(tree, renderCtx) : (
-                  <p className="empty">发送消息后，界面会渲染在这里</p>
-                )}
+                {renderVNode(tree, renderCtx)}
               </div>
             ))}
           </div>

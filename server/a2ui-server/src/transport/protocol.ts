@@ -1,16 +1,23 @@
 /**
  * AGUI 传输层事件包装：将数据格式化为 SSE 规范的 event/data 格式。
- * 支持 message / error / done 三种事件类型。
+ * message 承载协议内容，error / done 表示流状态，thought / tool_call / tool_result 描述 Agent 过程。
  */
 
 /** SSE 事件类型 */
-export type AGUIEventType = 'message' | 'error' | 'done'
+export type AGUIEventType =
+  | 'message'      // A2UI 协议增量
+  | 'reasoning'    // 模型思考过程（流式片段）
+  | 'thought'      // Agent 思考文本
+  | 'plan'         // 任务计划
+  | 'tool_call'    // 开始调用工具
+  | 'tool_result'  // 工具返回结果
+  | 'error'
+  | 'done'
 
 /** 错误对象结构 */
 export interface AGUIError {
   code: string        // 错误码
   message: string     // 错误信息
-  details?: unknown   // 错误详情
 }
 
 /**
@@ -37,7 +44,7 @@ export function formatAGUIEvent(
 }
 
 /** 格式化错误事件 */
-export function formatAGUIError(code: string, message: string, details?: unknown): string {
-  const err: AGUIError = { code, message, details }
+export function formatAGUIError(code: string, message: string): string {
+  const err: AGUIError = { code, message }
   return formatAGUIEvent('error', err)
 }

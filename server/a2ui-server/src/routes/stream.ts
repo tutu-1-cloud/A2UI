@@ -1,62 +1,79 @@
 /**
- * 流式 Agent 编排：归一化 LLM 输出 → SSE 下发 → 结束校验 → 落 assistant 轮次。
+ * 流式 Agent 编排：过程事件实时下发 → 协议增量归一化 → 落 assistant 轮次。
+ * 协议合法性由 agent/loop.ts 统一自检，此处只负责传输。
  */
 
 import type { Context } from 'koa'
 import { sseWrite, sseEnd } from '../transport/sse'
-import { formatAGUIEvent, formatAGUIError } from '../transport/protocol'
+import { formatAGUIEvent, formatAGUIError, type AGUIEventType } from '../transport/protocol'
 import { createProtocolNormalizer } from '../agent/normalize'
-import { appendTurn, type ConversationState } from '../session'
-
-export interface StreamAgentOptions {
-  validate?: (full: string) => boolean  // 结束时的完整性校验函数
-}
+import type { AgentEvent } from '../agent/loop'
+import { appendTurn, type ConversationState, type ToolTrace } from '../session'
 
 /**
- * 流式处理 Agent 输出：
- * 1. 逐 chunk 通过归一化器剥离围栏/散文、去空白
- * 2. 归一化后的文本通过 SSE 下发给前端
- * 3. 流结束后执行完整性校验（如缺少 surfaceUpdate/beginRendering 则报错丢弃）
- * 4. 校验通过后发送 done 事件，并将 assistant 轮次落入会话历史
+ * 流式处理 Agent 过程：
+ * 1. reasoning / thought / plan / tool_call / tool_result 作为独立 SSE 事件下发，供前端展示步骤
+ * 2. protocol 增量经归一化器剥离围栏/散文后，作为 message 事件下发
+ * 3. 结束后发送 done 事件，并将 assistant 轮次与工具轨迹落入会话历史
  */
 export async function streamAgent(
   ctx: Context,
-  agent: AsyncGenerator<string>,
+  agent: AsyncGenerator<AgentEvent>,
   session: ConversationState,
-  opts: StreamAgentOptions = {},
 ): Promise<void> {
   const normalizer = createProtocolNormalizer()
-  let seq = 0           // 消息序号
-  let full = ''         // 累积的完整归一化文本（用于结束校验）
+  let seq = 0                          // 协议消息序号
+  const toolTraces: ToolTrace[] = []   // 本轮工具轨迹
+
+  /** 统一下发入口：避免每处重复 sseWrite + formatAGUIEvent */
+  const send = (event: AGUIEventType, data: unknown, id?: string) =>
+    sseWrite(ctx, formatAGUIEvent(event, data, id))
 
   try {
-    // 逐 chunk 处理 LLM 流式输出
-    for await (const chunk of agent) {
-      const normalized = normalizer.push(chunk)
-      full += normalized
-      // 有有效内容时下发 SSE message 事件
-      if (normalized) sseWrite(ctx, formatAGUIEvent('message', normalized, String(++seq)))
+    for await (const evt of agent) {
+      switch (evt.type) {
+        case 'protocol': {
+          const normalized = normalizer.push(evt.delta)
+          if (normalized) send('message', normalized, String(++seq))
+          break
+        }
+        case 'reasoning':
+          send('reasoning', { text: evt.delta })
+          break
+        case 'thought':
+          send('thought', { text: evt.text })
+          break
+        case 'plan':
+          send('plan', { steps: evt.steps })
+          break
+        case 'tool_call':
+          send('tool_call', { id: evt.id, name: evt.name, args: evt.args })
+          break
+        case 'tool_result':
+          // 会话里只留摘要，SSE 里给前端更完整的结果
+          toolTraces.push({ name: evt.name, ok: evt.ok, result: evt.result.slice(0, 300) })
+          send('tool_result', {
+            id: evt.id,
+            name: evt.name,
+            ok: evt.ok,
+            result: evt.result.slice(0, 2000),
+          })
+          break
+      }
     }
     // 流结束，检查是否有未闭合对象
     normalizer.flush()
 
-    // 完整性校验：拦截 LLM 只吐补丁的情况
-    if (opts.validate && !opts.validate(full)) {
-      sseWrite(ctx, formatAGUIError('INCOMPLETE_PROTOCOL', '未输出完整协议（缺少 surfaceUpdate 或 beginRendering），本轮结果已丢弃，界面保持不变'))
-      return
-    }
-
-    // 校验通过，发送 done 事件
-    sseWrite(ctx, formatAGUIEvent('done', {}))
-    // 记录 assistant 轮次到会话历史
+    send('done', {})
+    // 记录 assistant 轮次到会话历史（含工具轨迹，供下一轮参考）
     appendTurn(session, {
       turnId: seq,
       role: 'assistant',
       content: '[A2UI 生成]',
       timestamp: Date.now(),
+      toolTraces: toolTraces.length ? toolTraces : undefined,
     })
   } catch (err) {
-    // 出错时下发 error 事件
     sseWrite(ctx, formatAGUIError('AGENT_ERROR', (err as Error).message ?? 'unknown error'))
   } finally {
     // 无论成功失败都结束 SSE 连接

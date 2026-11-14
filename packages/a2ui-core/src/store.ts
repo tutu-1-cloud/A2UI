@@ -16,7 +16,6 @@ export interface VNode {
   styles?: CSSProperties                        // 精细样式覆盖
   dataBinding?: string                          // 数据绑定路径
   template?: { componentId: string; dataBinding: string }  // List 模板配置
-  parentId?: string                             // 父节点 id（TreeBuilder 填充）
   itemData?: unknown                            // List 项的数据（expandList 填充）
 }
 
@@ -33,16 +32,8 @@ export class A2UIStore {
   // ========== Surface 生命周期 ==========
 
   /** 创建新画布，已存在则跳过 */
-  createSurface(surfaceId: string, version = '0.9') {
-    if (this.surfaces.has(surfaceId)) return
-    this.surfaces.set(surfaceId, {
-      surfaceId,
-      version,
-      components: new Map(),
-      dataModel: {},
-      dataBindings: new Map(),
-      isReady: false,
-    })
+  createSurface(surfaceId: string) {
+    this.ensureSurface(surfaceId)
   }
 
   /** 删除画布并通知 */
@@ -56,13 +47,7 @@ export class A2UIStore {
     return this.surfaces.get(surfaceId)
   }
 
-  /** 获取画布所有组件定义（数组形式） */
-  getComponents(surfaceId: string): ComponentDef[] {
-    const s = this.surfaces.get(surfaceId)
-    return s ? Array.from(s.components.values()) : []
-  }
-
-  /** 清空画布所有状态（组件、数据模型、绑定、根节点、就绪标记） */
+  /** 清空画布所有状态（组件、数据模型、绑定、根节点） */
   clear(surfaceId: string) {
     const s = this.surfaces.get(surfaceId)
     if (!s) return
@@ -70,7 +55,6 @@ export class A2UIStore {
     s.dataModel = {}
     s.dataBindings.clear()
     s.rootId = undefined
-    s.isReady = false
     this.notify()
   }
 
@@ -79,12 +63,11 @@ export class A2UIStore {
     for (const sid of this.surfaces.keys()) this.clear(sid)
   }
 
-  /** 标记画布就绪并设置根组件 id（收到 beginRendering 消息时调用） */
+  /** 设置根组件 id，标记画布可渲染（收到 beginRendering 消息时调用） */
   setReady(surfaceId: string, rootId: string) {
     const s = this.surfaces.get(surfaceId)
     if (!s) return
     s.rootId = rootId
-    s.isReady = true
     this.notify()
   }
 
@@ -118,11 +101,6 @@ export class A2UIStore {
     this.hydrateNodeMap.delete(id)
     s.dataBindings.delete(id)
     this.notify()
-  }
-
-  /** 获取单个组件定义 */
-  getComponent(surfaceId: string, id: string): ComponentDef | undefined {
-    return this.surfaces.get(surfaceId)?.components.get(id)
   }
 
   // ========== 数据模型 ==========
@@ -178,11 +156,9 @@ export class A2UIStore {
     if (!s) {
       s = {
         surfaceId,
-        version: '0.9',
         components: new Map(),
         dataModel: {},
         dataBindings: new Map(),
-        isReady: false,
       }
       this.surfaces.set(surfaceId, s)
     }

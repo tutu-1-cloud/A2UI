@@ -5,7 +5,7 @@
  */
 
 /** 压缩结果：base64、dataUrl、宽高 */
-export interface CompressedImage {
+interface CompressedImage {
   base64: string
   dataUrl: string
   width: number
@@ -67,7 +67,7 @@ function loadImage(file: File): Promise<HTMLImageElement> {
 }
 
 /** 多模态模型要求图片宽高均 > 10px */
-export const MIN_EDGE = 11
+const MIN_EDGE = 11
 
 /**
  * 按最长边等比缩放，确保短边不小于 MIN_EDGE。
@@ -75,7 +75,7 @@ export const MIN_EDGE = 11
  * @param height 原始高度
  * @param edge 最长边上限
  */
-export function fitSize(width: number, height: number, edge: number): { width: number; height: number } {
+function fitSize(width: number, height: number, edge: number): { width: number; height: number } {
   const max = Math.max(width, height)
   if (max > edge) {
     const ratio = edge / max

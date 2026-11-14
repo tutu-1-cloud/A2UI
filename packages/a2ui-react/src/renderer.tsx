@@ -22,13 +22,11 @@ type RenderFn = (node: TreeNode, ctx: RenderCtx) => ReactElement
  * 生成 data-* 属性，供前端事件委托定位组件。
  * - data-component-id：组件唯一 id
  * - data-component-type：组件类型
- * - data-use-hint：useHint JSON（调试用）
  */
 function dataAttrs(node: TreeNode): Record<string, string> {
   return {
     'data-component-id': node.id,
     'data-component-type': node.componentType,
-    'data-use-hint': node.useHint ? JSON.stringify(node.useHint) : '{}',
   }
 }
 
@@ -40,7 +38,7 @@ export const rendersMap: Record<string, RenderFn> = {
     const style = mergeStyles(node.useHint, node.styles, { fontSize: '14px', lineHeight: '1.5' })
     return createElement(
       'span',
-      { key: node.id, className: 'a2ui-text', style: style as ReactCSSProperties, ...dataAttrs(node) },
+      { key: node.id, style: style as ReactCSSProperties, ...dataAttrs(node) },
       text,
     )
   },
@@ -59,7 +57,6 @@ export const rendersMap: Record<string, RenderFn> = {
       'button',
       {
         key: node.id,
-        className: 'a2ui-button',
         style: style as ReactCSSProperties,
         ...dataAttrs(node),
         disabled: (node.props.disabled as boolean) ?? false,
@@ -76,7 +73,6 @@ export const rendersMap: Record<string, RenderFn> = {
     const style = mergeStyles(node.useHint, node.styles, { maxWidth: '100%' })
     return createElement('img', {
       key: node.id,
-      className: 'a2ui-image',
       style: style as ReactCSSProperties,
       ...dataAttrs(node),
       src: source,
@@ -97,7 +93,6 @@ export const rendersMap: Record<string, RenderFn> = {
     // 非受控输入框：用 defaultValue 只设初始值，避免 store 写入触发重渲染时输入框内容被重置
     const input = createElement('input', {
       key: node.id,
-      className: 'a2ui-input',
       style: style as ReactCSSProperties,
       ...dataAttrs(node),
       placeholder,
@@ -112,8 +107,8 @@ export const rendersMap: Record<string, RenderFn> = {
       // 有 label 时用 label 包裹，包含 label 文字和输入框
       return createElement(
         'label',
-        { key: `label-${node.id}`, className: 'a2ui-input-wrap', ...dataAttrs(node) },
-        createElement('span', { className: 'a2ui-input-label' }, label),
+        { key: `label-${node.id}`, ...dataAttrs(node) },
+        createElement('span', null, label),
         input,
       )
     }
@@ -130,7 +125,7 @@ export const rendersMap: Record<string, RenderFn> = {
     })
     return createElement(
       'div',
-      { key: node.id, className: 'a2ui-column', style: style as ReactCSSProperties, ...dataAttrs(node) },
+      { key: node.id, style: style as ReactCSSProperties, ...dataAttrs(node) },
       ...renderChildren(node, ctx),
     )
   },
@@ -145,7 +140,7 @@ export const rendersMap: Record<string, RenderFn> = {
     })
     return createElement(
       'div',
-      { key: node.id, className: 'a2ui-row', style: style as ReactCSSProperties, ...dataAttrs(node) },
+      { key: node.id, style: style as ReactCSSProperties, ...dataAttrs(node) },
       ...renderChildren(node, ctx),
     )
   },
@@ -158,10 +153,10 @@ export const rendersMap: Record<string, RenderFn> = {
       borderRadius: '8px',
       padding: '12px',
     })
-    const titleEl = title ? createElement('div', { className: 'a2ui-card-title' }, title) : null
+    const titleEl = title ? createElement('div', null, title) : null
     return createElement(
       'div',
-      { key: node.id, className: 'a2ui-card', style: style as ReactCSSProperties, ...dataAttrs(node) },
+      { key: node.id, style: style as ReactCSSProperties, ...dataAttrs(node) },
       titleEl,
       ...renderChildren(node, ctx),
     )
@@ -177,7 +172,7 @@ export const rendersMap: Record<string, RenderFn> = {
     })
     return createElement(
       'div',
-      { key: node.id, className: 'a2ui-list', style: style as ReactCSSProperties, ...dataAttrs(node) },
+      { key: node.id, style: style as ReactCSSProperties, ...dataAttrs(node) },
       ...renderChildren(node, ctx),
     )
   },
@@ -196,7 +191,7 @@ export function renderVNode(node: TreeNode, ctx: RenderCtx): ReactElement {
   const renderFn = rendersMap[node.componentType]
   return renderFn
     ? renderFn(node, ctx)
-    : createElement('div', { key: node.id, className: 'a2ui-unknown' }, node.componentType)
+    : createElement('div', { key: node.id }, node.componentType)
 }
 
 /**

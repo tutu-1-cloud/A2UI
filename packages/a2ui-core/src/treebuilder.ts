@@ -9,8 +9,6 @@ import type { A2UIStore, VNode } from './store'
 /** 树节点：VNode 的子树展开形式，children 为真实子节点数组 */
 export interface TreeNode extends Omit<VNode, 'children'> {
   children: TreeNode[]              // 真实子节点数组（非 id 指针）
-  componentId: string               // 组件定义 id（与 id 相同，List 项为模板 id）
-  isListItem?: boolean              // 是否为 List 展开的项
 }
 
 export class TreeBuilder {
@@ -26,11 +24,6 @@ export class TreeBuilder {
     return result
   }
 
-  /** 构建单个画布的树 */
-  buildSingle(surfaceId: string): TreeNode | null {
-    return this.buildSurface(surfaceId)
-  }
-
   /** 构建单个画布的根树 */
   private buildSurface(surfaceId: string): TreeNode | null {
     const s = this.store.getSurfaceState(surfaceId)
@@ -43,7 +36,7 @@ export class TreeBuilder {
     if (!rootId) return null  // 尚未就绪，无根组件
 
     const visited = new Set<string>()
-    return this.buildNode(surfaceId, rootId, visited, undefined)
+    return this.buildNode(surfaceId, rootId, visited)
   }
 
   /** 将组件定义集合全部转为 VNode 并缓存，同时建立 id → 数据路径绑定 */
@@ -74,7 +67,6 @@ export class TreeBuilder {
     surfaceId: string,
     id: string,
     visiting: Set<string>,
-    parentId: string | undefined,
   ): TreeNode | null {
     const vnode = this.store.hydrateNodeMap.get(id)
     if (!vnode) return null
@@ -91,11 +83,9 @@ export class TreeBuilder {
     const node: TreeNode = {
       ...vnode,
       children: [],
-      componentId: id,
-      parentId,
     }
 
-    node.children = this.buildChildren(surfaceId, vnode, visiting, id)
+    node.children = this.buildChildren(surfaceId, vnode, visiting)
 
     visiting.delete(id)  // 回溯，允许其他分支引用同一节点
     return node
@@ -106,7 +96,6 @@ export class TreeBuilder {
     surfaceId: string,
     vnode: VNode,
     visiting: Set<string>,
-    parentId: string,
   ): TreeNode[] {
     // List 组件且有模板配置时，按数据数组展开
     if (vnode.componentType === 'List' && vnode.template) {
@@ -114,7 +103,7 @@ export class TreeBuilder {
     }
     // 普通组件：将 children id 指针逐个解析为子节点
     return (vnode.children ?? [])
-      .map((childId) => this.buildNode(surfaceId, childId, visiting, parentId))
+      .map((childId) => this.buildNode(surfaceId, childId, visiting))
       .filter((c): c is TreeNode => c !== null)
   }
 
@@ -133,14 +122,11 @@ export class TreeBuilder {
       const node: TreeNode = {
         ...template,
         id: syntheticId,        // 合成唯一 id
-        componentId: templateId, // 指向原始模板定义
         children: [],
-        parentId: listVNode.id,
         itemData: item,         // 绑定当前项数据
-        isListItem: true,
       }
       // 递归构建模板内部子树
-      node.children = this.buildChildren(surfaceId, template, visiting, syntheticId)
+      node.children = this.buildChildren(surfaceId, template, visiting)
       // 为合成项建立数据绑定，指向数组当前索引
       this.store.setDataBinding(surfaceId, syntheticId, `${dataBinding}/${index}`)
       return node

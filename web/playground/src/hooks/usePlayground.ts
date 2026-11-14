@@ -1,6 +1,6 @@
 /**
  * Playground 核心 Hook
- * 管理 A2UI 运行时、对话消息、选中组件、图片上传、增量/全量生成等所有交互逻辑。
+ * 管理 A2UI 运行时、对话消息、选中组件、图片上传、增量/全量生成等交互逻辑。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -9,23 +9,146 @@ import type { ComponentDef, ElementReference } from '@a2ui/core'
 import { createRenderContext } from '@a2ui/react'
 import { generateDiff, applyDiff } from '../diff'
 import { compressImage } from '../image'
-import { fetchSSE } from '../sse'
+import { fetchSSE, type SSEEvent } from '../sse'
 import { buildSnapshot } from '../snapshot'
 
 const SERVER_URL = 'http://127.0.0.1:3000'        // 后端服务地址
 const DEFAULT_SESSION_ID = 'default'              // 默认会话 id
 const DEFAULT_SURFACE_ID = 's1'                   // 默认画布 id
 
+/** A2UI 运行时实例（createA2UI 的返回值） */
+type Engine = ReturnType<typeof createA2UI>
+
 /** 聊天消息 */
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
-  hasImage?: boolean
+  imageUrl?: string   // 用户上传图片的 dataURL，用于聊天区回显缩略图
+}
+
+/** Agent 执行步骤（思考过程 / 思考 / 计划 / 工具调用 / 工具结果） */
+export interface AgentStep {
+  id: string
+  kind: 'reasoning' | 'thought' | 'plan' | 'tool_call' | 'tool_result'
+  text: string
+  ok?: boolean
+  live?: boolean   // 思考过程是否仍在进行（进行中保持展开）
 }
 
 let messageUid = 0
 const nextMessageId = () => `m${++messageUid}`
+
+/** 喂入完整 JSONL：解析全部消息并结束流 */
+function feedJsonl(engine: Engine, jsonl: string): void {
+  engine.feed(jsonl)
+  engine.end()
+}
+
+/**
+ * 把生成结果落到 runtime。
+ * - 全量：重建 runtime（复用引用，保持 renderCtx 有效）
+ * - 增量：临时 runtime 解析 → diff → apply，避免整树重建丢输入框等状态
+ * @returns 增量场景下是否成功应用了完整界面
+ */
+function applyResponse(engine: Engine, jsonl: string, incremental: boolean): boolean {
+  if (!incremental) {
+    Object.assign(engine, createA2UI())
+    feedJsonl(engine, jsonl)
+    return true
+  }
+
+  const temp = createA2UI()
+  feedJsonl(temp, jsonl)
+
+  let applied = false
+  for (const [surfaceId, state] of temp.store.surfaces) {
+    // 完整性校验：必须有根组件且有组件，否则跳过（模型只吐补丁的情况）
+    if (!state.rootId || state.components.size === 0) continue
+    const oldComponents = engine.store.getSurfaceState(surfaceId)?.components ?? new Map()
+    applyDiff(generateDiff(oldComponents, state.components), surfaceId, engine.store)
+    applied = true
+  }
+  return applied
+}
+
+/** 构造多模态消息：有图片时 content 为 text + image_url 数组 */
+function buildMessagesPayload(text: string, imageBase64: string | null) {
+  if (!imageBase64) return undefined
+  return [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: text || '根据图片生成界面' },
+        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
+      ],
+    },
+  ]
+}
+
+/** 从错误信息中提取可读消息（剥离 OpenAI 内部错误前缀） */
+function extractErrorMessage(err: Error): string {
+  let message = err.message
+  try {
+    // 错误体可能是 JSON，取其中的 message 字段
+    const parsed = JSON.parse(message) as { message?: unknown }
+    if (parsed?.message) message = String(parsed.message)
+  } catch {
+    /* 不是 JSON，原样展示 */
+  }
+  // 剥离 <数字> InternalError.xxx.xxx: 前缀
+  return message.replace(/^<\d+>\s*(?:InternalError\.\w+\.\w+:\s*)?/, '')
+}
+
+/** 按组件 id 查找组件定义（遍历所有 surface） */
+function findComponentDef(engine: Engine, id: string): ComponentDef | undefined {
+  for (const state of engine.store.surfaces.values()) {
+    const def = state.components.get(id)
+    if (def) return def
+  }
+  return undefined
+}
+
+/** 应用选中高亮：移除旧高亮，为当前选中组件添加 a2ui-selected class */
+function applySelectionHighlight(selectedId: string | null): void {
+  const canvas = document.querySelector('.canvas')
+  if (!canvas) return
+
+  canvas.querySelectorAll('.a2ui-selected').forEach((el) => el.classList.remove('a2ui-selected'))
+  if (!selectedId) return
+
+  const target = canvas.querySelector(`[data-component-id="${selectedId}"]`)
+  target?.classList.add('a2ui-selected')
+}
+
+/** 把 SSE 过程事件转成可展示的步骤 */
+function toAgentStep(evt: SSEEvent, seq: number): AgentStep {
+  let payload: Record<string, unknown> = {}
+  try {
+    payload = JSON.parse(evt.data) as Record<string, unknown>
+  } catch {
+    /* 非 JSON 时按原始文本展示 */
+  }
+
+  if (evt.event === 'thought') {
+    return { id: `st${seq}`, kind: 'thought', text: String(payload.text ?? evt.data) }
+  }
+
+  if (evt.event === 'plan') {
+    const steps = Array.isArray(payload.steps) ? (payload.steps as unknown[]).map(String) : []
+    return { id: `st${seq}`, kind: 'plan', text: steps.join(' → ') }
+  }
+
+  const name = String(payload.name ?? 'tool')
+  if (evt.event === 'tool_call') {
+    const args = payload.args ? JSON.stringify(payload.args) : ''
+    return { id: `st${seq}`, kind: 'tool_call', text: `${name}${args ? ` ${args}` : ''}` }
+  }
+
+  const ok = payload.ok !== false
+  const result = String(payload.result ?? '').replace(/\s+/g, ' ').slice(0, 160)
+  return { id: `st${seq}`, kind: 'tool_result', ok, text: `${name} → ${result}` }
+}
 
 export function usePlayground() {
   // 主运行时用 useRef 持久化，增量修改时复用引用，避免重渲染重建导致状态丢失
@@ -37,11 +160,14 @@ export function usePlayground() {
   const [loading, setLoading] = useState(false)
   const [compressing, setCompressing] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [steps, setSteps] = useState<AgentStep[]>([])
   const [inputText, setInputText] = useState('')
-  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedElement, setSelectedElement] = useState<ElementReference | null>(null)
   const [imageBase64, setImageBase64] = useState<string | null>(null)
   const [imageName, setImageName] = useState('')
+
+  // 选中 id 由选中元素派生，避免两份状态不同步
+  const selectedId = selectedElement?.componentId ?? null
 
   // 渲染树：treeVersion 变化时重新构建
   const trees = useMemo(() => {
@@ -49,11 +175,46 @@ export function usePlayground() {
     return runtime.buildTrees()
   }, [treeVersion, runtime])
 
-  /** 喂入完整 JSONL 到指定 runtime（feed + end） */
-  const feedFullJsonl = useCallback((jsonl: string, target = runtime) => {
-    target.feed(jsonl)
-    target.end()
-  }, [runtime])
+  // Agent 步骤序号：对话与组件动作两个入口共用，保证 step id 不重复
+  const stepSeqRef = useRef(0)
+
+  /** 清空上一轮的 Agent 步骤并重置序号 */
+  const resetSteps = useCallback(() => {
+    stepSeqRef.current = 0
+    setSteps([])
+  }, [])
+
+  /** 收集单个 Agent 过程事件，追加到步骤面板 */
+  const collectStep = useCallback((evt: SSEEvent) => {
+    // 思考过程是流式片段：追加到上一条 reasoning 上，避免每段都新建一行
+    if (evt.event === 'reasoning') {
+      let text = ''
+      try {
+        text = String((JSON.parse(evt.data) as { text?: string }).text ?? '')
+      } catch {
+        /* 非 JSON 忽略 */
+      }
+      if (!text) return
+
+      setSteps((prev) => {
+        const last = prev[prev.length - 1]
+        if (last?.kind === 'reasoning') {
+          return [...prev.slice(0, -1), { ...last, text: last.text + text, live: true }]
+        }
+        return [...prev, { id: `st${++stepSeqRef.current}`, kind: 'reasoning', text, live: true }]
+      })
+      return
+    }
+
+    setSteps((prev) => [...prev, toAgentStep(evt, ++stepSeqRef.current)])
+  }, [])
+
+  /** 收起所有思考过程（本轮生成结束后调用） */
+  const collapseReasoning = useCallback(() => {
+    setSteps((prev) =>
+      prev.map((s) => (s.kind === 'reasoning' && s.live ? { ...s, live: false } : s)),
+    )
+  }, [])
 
   /**
    * 组件动作回传：调 /api/action，将动作转为文本指令走同一 LLM 链路。
@@ -64,18 +225,25 @@ export function usePlayground() {
     action: string
     payload?: unknown
   }) => {
+    resetSteps()
     try {
-      const responseJsonl = await fetchSSE(`${SERVER_URL}/api/action`, {
-        sessionId: DEFAULT_SESSION_ID,
-        action,
-        currentProtocol: buildSnapshot(runtime.store),
-      })
-      feedFullJsonl(responseJsonl)
+      const responseJsonl = await fetchSSE(
+        `${SERVER_URL}/api/action`,
+        {
+          sessionId: DEFAULT_SESSION_ID,
+          action,
+          currentProtocol: buildSnapshot(runtime.store),
+        },
+        collectStep,
+      )
+      feedJsonl(runtime, responseJsonl)
       setTreeVersion((v) => v + 1)
     } catch (err) {
       setStatus('事件错误: ' + (err as Error).message)
+    } finally {
+      collapseReasoning()
     }
-  }, [runtime, feedFullJsonl])
+  }, [runtime, resetSteps, collectStep, collapseReasoning])
 
   /** 渲染上下文：提供动作回调、数据变更回调、数据读取 */
   const renderCtx = useMemo(() => createRenderContext({
@@ -97,36 +265,21 @@ export function usePlayground() {
     },
   }), [runtime, sendAction])
 
-  /** 从错误信息中提取友好的可读消息（剥离 OpenAI 内部错误前缀） */
-  function extractErrorMessage(err: Error): string {
-    let friendlyMessage = err.message
-    try {
-      // 尝试解析 JSON 错误体，提取 message 字段
-      const errorObj = JSON.parse(friendlyMessage)
-      if (errorObj?.message) friendlyMessage = String(errorObj.message)
-    } catch {
-      /* 不是 JSON，原样展示 */
-    }
-    // 剥离 <数字> InternalError.xxx.xxx: 前缀
-    return friendlyMessage.replace(/^<\d+>\s*(?:InternalError\.\w+\.\w+:\s*)?/, '')
-  }
-
   /**
    * 发送消息：核心交互函数。
-   * - 有选中元素 → 增量修改（临时 runtime 解析 → diff → apply 到主 runtime）
-   * - 无选中元素 → 全量生成（重建 runtime，复用引用保持 renderCtx 有效）
+   * - 有选中元素 → 增量修改（diff 到主 runtime）
+   * - 无选中元素 → 全量生成（重建 runtime）
    */
   const sendMessage = useCallback(async () => {
-    const [curLoading, curCompressing] = [loading, compressing]
-    if (curLoading || curCompressing) return
+    if (loading || compressing) return
+
     const promptText = inputText.trim()
-    // 文字和图片都没有时提示用户
     if (!promptText && !imageBase64) {
       setStatus('请输入指令或上传图片')
       return
     }
 
-    // 清空输入框并添加用户消息
+    // 清空输入框并记录用户消息（有图片时带 dataURL 回显）
     setInputText('')
     setMessages((prev) => [
       ...prev,
@@ -134,71 +287,31 @@ export function usePlayground() {
         id: nextMessageId(),
         role: 'user',
         content: promptText || '[图片]',
-        hasImage: !!imageBase64,
+        imageUrl: imageBase64 ? `data:image/jpeg;base64,${imageBase64}` : undefined,
       },
     ])
 
     const hasSelection = !!selectedElement
     setLoading(true)
-    // 根据场景设置状态提示
-    setStatus(
-      imageBase64
-        ? '图片理解中…'
-        : hasSelection
-          ? '增量修改中…'
-          : '生成中…',
-    )
+    resetSteps()
+    setStatus(imageBase64 ? '图片理解中…' : hasSelection ? '增量修改中…' : '生成中…')
 
     try {
-      // 构造多模态消息：有图片时 content 为数组（text + image_url）
-      const messagesPayload = imageBase64
-        ? [
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: promptText || '根据图片生成界面' },
-                {
-                  type: 'image_url',
-                  image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
-                },
-              ],
-            },
-          ]
-        : undefined
+      // 调用后端获取 A2UI 协议 JSONL，过程事件实时追加到步骤面板
+      const responseJsonl = await fetchSSE(
+        `${SERVER_URL}/api/chat`,
+        {
+          text: promptText || '生成一个界面',
+          messages: buildMessagesPayload(promptText, imageBase64),
+          selectedElement: hasSelection ? selectedElement : undefined,
+          currentProtocol: buildSnapshot(runtime.store),
+        },
+        collectStep,
+      )
 
-      // 调用后端 /api/chat 获取 A2UI 协议 JSONL
-      const responseJsonl = await fetchSSE(`${SERVER_URL}/api/chat`, {
-        text: promptText || '生成一个界面',
-        messages: messagesPayload,
-        selectedElement: hasSelection ? selectedElement : undefined,
-        currentProtocol: buildSnapshot(runtime.store),
-      })
+      const hasApplied = applyResponse(runtime, responseJsonl, hasSelection)
+      if (!hasSelection) setSelectedElement(null)
 
-      let hasApplied = false
-      if (hasSelection) {
-        // 增量修改：临时 runtime 解析新协议 → 对比 diff → apply 到主 runtime
-        const tempRuntime = createA2UI()
-        feedFullJsonl(responseJsonl, tempRuntime)
-        for (const [surfaceId, surfaceState] of tempRuntime.store.surfaces) {
-          // 完整性校验：必须有 rootId 且有组件，否则跳过（LLM 只吐补丁的情况）
-          if (!surfaceState.rootId || surfaceState.components.size === 0) continue
-          const oldComponents =
-            runtime.store.getSurfaceState(surfaceId)?.components ?? new Map()
-          const diffOps = generateDiff(oldComponents, surfaceState.components)
-          applyDiff(diffOps, surfaceId, runtime.store)
-          hasApplied = true
-        }
-      } else {
-        // 全量生成：用 Object.assign 复用 runtime 引用，保持 renderCtx 中的引用有效
-        const freshRuntime = createA2UI()
-        Object.assign(runtime, freshRuntime)
-        feedFullJsonl(responseJsonl, runtime)
-        // 清空选中状态
-        setSelectedId(null)
-        setSelectedElement(null)
-      }
-
-      // 触发重渲染并添加助手消息
       setTreeVersion((v) => v + 1)
       setMessages((prev) => [
         ...prev,
@@ -214,69 +327,46 @@ export function usePlayground() {
       ])
       setStatus(hasSelection && !hasApplied ? '界面未变' : '完成')
     } catch (err) {
-      // 错误处理：提取友好消息并展示
       const friendlyMessage = extractErrorMessage(err as Error)
       setStatus('错误: ' + friendlyMessage)
       setMessages((prev) => [
         ...prev,
-        {
-          id: nextMessageId(),
-          role: 'assistant',
-          content: '出错了：' + friendlyMessage,
-        },
+        { id: nextMessageId(), role: 'assistant', content: '出错了：' + friendlyMessage },
       ])
     } finally {
-      // 无论成功失败都重置状态
+      // 无论成功失败都重置状态；思考过程到此收起
+      collapseReasoning()
       setLoading(false)
       setImageBase64(null)
       setImageName('')
     }
   }, [
     loading, compressing, inputText, imageBase64, selectedElement,
-    runtime, feedFullJsonl,
+    runtime, resetSteps, collectStep, collapseReasoning,
   ])
 
-  /** 清空画布：清除所有 surface 状态 */
-  const clearCanvas = useCallback(() => {
+  /** 清空画布：同时重置后端会话历史与前端消息列表，确保下一轮从空白开始 */
+  const clearCanvas = useCallback(async () => {
     runtime.store.clearAll()
-    setSelectedId(null)
     setSelectedElement(null)
+    setMessages([])
+    resetSteps()
     setTreeVersion((v) => v + 1)
-    setStatus('画布已清空')
-  }, [runtime])
 
-  /** 按组件 id 查找组件定义（遍历所有 surface） */
-  function findComponentDef(id: string): ComponentDef | undefined {
-    for (const surfaceState of runtime.store.surfaces.values()) {
-      const componentDef = surfaceState.components.get(id)
-      if (componentDef) return componentDef
+    try {
+      await fetch(`${SERVER_URL}/api/session/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: DEFAULT_SESSION_ID }),
+      })
+      setStatus('画布与会话已清空')
+    } catch (err) {
+      setStatus('画布已清空，但会话重置失败：' + (err as Error).message)
     }
-    return undefined
-  }
-
-  /** 应用选中高亮：移除旧高亮，为当前选中组件添加 a2ui-selected class */
-  function applySelectionHighlight() {
-    const canvas = document.querySelector('.canvas') as HTMLElement | null
-    if (!canvas) return
-    canvas
-      .querySelectorAll('.a2ui-selected')
-      .forEach((element) => element.classList.remove('a2ui-selected'))
-    if (selectedId) {
-      const element = canvas.querySelector(
-        `[data-component-id="${selectedId}"]`,
-      ) as HTMLElement | null
-      element?.classList.add('a2ui-selected')
-    }
-  }
-
-  // 每次渲染后更新选中高亮
-  useEffect(() => {
-    applySelectionHighlight()
-  })
+  }, [runtime, resetSteps])
 
   /** 选中组件：设置选中状态并在输入框追加 @Type[id] 引用 */
   const onClickComponent = useCallback((componentDef: ComponentDef) => {
-    setSelectedId(componentDef.id)
     setSelectedElement({
       componentId: componentDef.id,
       type: componentDef.componentType,
@@ -285,7 +375,6 @@ export function usePlayground() {
       currentUseHint: componentDef.useHint as ElementReference['currentUseHint'],
       currentStyles: componentDef.styles as ElementReference['currentStyles'],
     })
-    // 在输入框末尾追加 @引用
     setInputText((prev) => prev + ` @${componentDef.componentType}[${componentDef.id}]`)
   }, [])
 
@@ -297,28 +386,25 @@ export function usePlayground() {
     const target = e.target as HTMLElement
     // 输入框和按钮有自己的交互行为，不触发选中
     if (target.tagName === 'INPUT' || target.tagName === 'BUTTON') return
-    const componentEl = target.closest('[data-component-id]') as HTMLElement | null
-    if (!componentEl) return
-    const id = componentEl.getAttribute('data-component-id')
+
+    const componentEl = target.closest('[data-component-id]')
+    const id = componentEl?.getAttribute('data-component-id')
     if (!id) return
-    const componentDef = findComponentDef(id)
-    if (!componentDef) return
-    onClickComponent(componentDef)
-  }, [onClickComponent])
+
+    const componentDef = findComponentDef(runtime, id)
+    if (componentDef) onClickComponent(componentDef)
+  }, [runtime, onClickComponent])
 
   /** 取消选中 */
   const clearSelection = useCallback(() => {
     setSelectedElement(null)
-    setSelectedId(null)
   }, [])
 
-  /**
-   * 图片上传处理：压缩图片并设置 base64。
-   * 压缩后设置 imageBase64 和 imageName，状态显示图片尺寸。
-   */
+  /** 图片上传：压缩后暂存 base64，发送时随消息一起提交 */
   const onImageUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+
     try {
       setCompressing(true)
       setStatus('图片压缩中…')
@@ -335,11 +421,17 @@ export function usePlayground() {
     }
   }, [])
 
+  // 选中状态或画布变化后更新高亮
+  useEffect(() => {
+    applySelectionHighlight(selectedId)
+  }, [selectedId, treeVersion])
+
   return {
     status,
     loading,
     compressing,
     messages,
+    steps,
     inputText,
     setInputText,
     selectedElement,

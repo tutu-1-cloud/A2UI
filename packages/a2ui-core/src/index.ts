@@ -11,8 +11,6 @@ import type { A2UIMessage } from './types'
 
 // 统一导出所有公共类型和类
 export * from './types'
-export { A2UIBuffer } from './buffer'
-export { parseLine } from './parser'
 export { A2UIStore, type VNode } from './store'
 export { TreeBuilder, type TreeNode } from './treebuilder'
 
@@ -61,11 +59,6 @@ export function createA2UI() {
     buildTrees(): Map<string, TreeNode | null> {
       return treeBuilder.build()
     },
-
-    /** 构建单个画布的渲染树 */
-    buildTree(surfaceId: string): TreeNode | null {
-      return treeBuilder.buildSingle(surfaceId)
-    },
   }
 }
 
@@ -77,7 +70,7 @@ function applyMessage(store: A2UIStore, msg: A2UIMessage) {
   switch (msg.type) {
     case 'createSurface':
       // 创建画布
-      store.createSurface(msg.surfaceId, (msg as { catalogId?: string }).catalogId ?? '0.9')
+      store.createSurface(msg.surfaceId)
       break
     case 'surfaceUpdate':
       // 批量插入/更新组件定义

@@ -77,9 +77,94 @@ export function createProtocolNormalizer(): ProtocolNormalizer {
 }
 
 /**
- * 判断协议是否完整：必须同时包含 surfaceUpdate 和 beginRendering。
- * 用于拦截 LLM 只吐 dataModelUpdate 补丁的情况。
+ * 归一化整段协议文本：剥离 markdown 围栏与散文。
+ * Agent 自检与 validate_protocol 工具共用，避免两处实现漂移。
  */
-export function isCompleteProtocol(text: string): boolean {
-  return text.includes('"surfaceUpdate"') && text.includes('"beginRendering"')
+export function normalizeProtocolText(raw: string): string {
+  const normalizer = createProtocolNormalizer()
+  const text = normalizer.push(raw)
+  normalizer.flush()
+  return text
+}
+
+/** 协议校验结果 */
+export interface ProtocolCheck {
+  ok: boolean          // 是否完全合法
+  fatal: boolean       // 致命错误（渲染不出东西），否则只是部分组件不可达
+  message: string      // 可读报告
+}
+
+/**
+ * 校验协议结构：必需消息、root、children 可达性。
+ * 供 Agent 循环在协议下发前兜底，避免把坏界面推给前端。
+ */
+export function checkProtocol(jsonl: string): ProtocolCheck {
+  const fail = (message: string, fatal = true): ProtocolCheck => ({ ok: false, fatal, message })
+
+  const lines = jsonl
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (lines.length === 0) return fail('协议为空')
+
+  interface RawComponent {
+    id?: string
+    children?: string[]
+    template?: { componentId?: string }
+  }
+  let components: RawComponent[] = []
+  let rootId = ''
+  let hasSurfaceUpdate = false
+  let hasBeginRendering = false
+
+  for (let i = 0; i < lines.length; i++) {
+    let msg: Record<string, unknown>
+    try {
+      msg = JSON.parse(lines[i]) as Record<string, unknown>
+    } catch {
+      return fail(`第 ${i + 1} 行不是合法 JSON：${lines[i].slice(0, 120)}`)
+    }
+    if (msg.type === 'surfaceUpdate') {
+      hasSurfaceUpdate = true
+      components = (msg.components as RawComponent[]) ?? []
+    }
+    if (msg.type === 'beginRendering') {
+      hasBeginRendering = true
+      rootId = String(msg.root ?? '')
+    }
+  }
+
+  if (!hasSurfaceUpdate || !hasBeginRendering) return fail('缺少 surfaceUpdate 或 beginRendering 消息')
+  if (components.length === 0) return fail('surfaceUpdate 的 components 为空')
+  if (!rootId) return fail('beginRendering 缺少 root 字段')
+
+  const byId = new Map<string, RawComponent>()
+  for (const component of components) {
+    if (!component.id) return fail('存在缺少 id 的组件定义')
+    if (byId.has(component.id)) return fail(`组件 id 重复：${component.id}`)
+    byId.set(component.id, component)
+  }
+  if (!byId.has(rootId)) return fail(`root "${rootId}" 不在 components 中`)
+
+  // 从 root 沿 children 深度遍历，找出挂接不到的游离组件
+  const reachable = new Set<string>()
+  const stack = [rootId]
+  while (stack.length) {
+    const id = stack.pop() as string
+    if (reachable.has(id)) continue
+    reachable.add(id)
+    const component = byId.get(id)
+    if (!component) return fail(`children 中引用了不存在的组件：${id}`)
+    for (const childId of component.children ?? []) stack.push(childId)
+    // List 模板通过 template 引用而非 children，同样属于可达组件
+    const templateId = component.template?.componentId
+    if (templateId) stack.push(templateId)
+  }
+
+  const orphans = components.map((c) => c.id as string).filter((id) => !reachable.has(id))
+  if (orphans.length) {
+    // 树本身能渲染，只是有部分组件挂不上去
+    return fail(`以下组件无法从 root 到达（不会显示）：${orphans.join('、')}`, false)
+  }
+  return { ok: true, fatal: false, message: `校验通过：${components.length} 个组件，root=${rootId}` }
 }

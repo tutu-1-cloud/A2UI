@@ -25,7 +25,7 @@ export function parseLine(line: string): A2UIMessage | null {
   switch (type) {
     case 'createSurface':
       // 创建画布
-      return { type: 'createSurface', surfaceId, catalogId: obj.catalogId as string | undefined }
+      return { type: 'createSurface', surfaceId }
     case 'surfaceUpdate':
       // 批量更新组件定义
       return { type: 'surfaceUpdate', surfaceId, components: (obj.components as ComponentDef[]) ?? [] }

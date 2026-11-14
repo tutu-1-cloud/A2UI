@@ -1,6 +1,6 @@
 /**
  * A2UI 服务端入口
- * 基于 Koa 构建，提供健康检查、对话生成、组件动作三条路由。
+ * 基于 Koa 构建，提供健康检查、对话生成、组件动作、会话重置四条路由。
  * LLM 配置从 .env 读取（dotenv/config 自动加载）。
  */
 
@@ -10,6 +10,7 @@ import cors from '@koa/cors'
 import Router from '@koa/router'
 import bodyParser from 'koa-bodyparser'
 import { hasRealAgent } from './agent'
+import { resetSession } from './session'
 import { chatHandler } from './routes/chat'
 import { actionHandler } from './routes/action'
 
@@ -30,6 +31,12 @@ router.get('/api/health', (ctx) => {
 router.post('/api/chat', chatHandler)
 // 组件动作：按钮点击等交互事件 → 转为文本指令走同一 LLM 链路
 router.post('/api/action', actionHandler)
+// 会话重置：清空画布时同步丢弃后端对话历史，避免旧上下文污染下一轮
+router.post('/api/session/reset', (ctx) => {
+  const { sessionId } = (ctx.request.body ?? {}) as { sessionId?: string }
+  resetSession(sessionId ?? 'default')
+  ctx.body = { ok: true }
+})
 
 app.use(router.routes()).use(router.allowedMethods())
 

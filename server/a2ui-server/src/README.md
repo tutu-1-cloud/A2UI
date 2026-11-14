@@ -9,7 +9,7 @@
 
 | 层级 | 职责 | 事件/消息类型 |
 |------|------|--------------|
-| **传输层（SSE）** | 事件封装、流式分包 | `message` / `error` / `done` |
+| **传输层（SSE）** | 事件封装、流式分包 | `message` / `thought` / `plan` / `tool_call` / `tool_result` / `error` / `done` |
 | **应用层（A2UI JSONL）** | 界面协议数据 | `createSurface` / `surfaceUpdate` / `dataModelUpdate` / `beginRendering` / `deleteSurface` |
 
 - 传输层事件由 `transport/protocol.ts` 的 `formatAGUIEvent` 生成。

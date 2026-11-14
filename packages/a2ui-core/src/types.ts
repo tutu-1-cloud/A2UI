@@ -86,12 +86,10 @@ export interface ListTemplate {
 /** Surface 状态：一个画布的完整运行时状态 */
 export interface SurfaceState {
   surfaceId: string                         // 画布 id
-  version: string                           // 协议版本
   components: Map<string, ComponentDef>     // 组件定义集合（id → 定义）
   dataModel: Record<string, unknown>        // 数据模型（UI 状态）
   dataBindings: Map<string, string>         // 组件 id → 数据路径绑定
   rootId?: string                           // 根组件 id
-  isReady: boolean                          // 是否已就绪（收到 beginRendering）
 }
 
 /** 元素引用：选中组件时传递给后端的上下文信息 */
@@ -115,7 +113,6 @@ export interface ComponentAction {
 export interface CreateSurfaceMessage {
   type: 'createSurface'
   surfaceId: string
-  catalogId?: string
 }
 
 export interface SurfaceUpdateMessage {
