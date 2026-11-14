@@ -14,15 +14,15 @@
 
 ### 生成页面（22s）
 
-[▶ 观看录屏](docs/images/demo-page.mp4)
+https://github.com/user-attachments/assets/9a30872e-4b71-44cf-b0f6-1004a84363bd
 
 ### 表单（21s）
 
-[▶ 观看录屏](docs/images/demo-form.mp4)
+https://github.com/user-attachments/assets/4b251c6e-fc62-44de-a508-ff30b92d6e6a
 
 ### 计数器交互（23s）
 
-[▶ 观看录屏](docs/images/demo-counter.mp4)
+https://github.com/user-attachments/assets/2d963d2a-4d89-4b8b-9120-716339337422
 
 ## 快速开始
 
